@@ -10,7 +10,7 @@
 #define IR_LED_PIN 2
 
 // Define your WiFi credentials
-const char* ssid = "ssid";
+const char* ssid = "Ssid";
 const char* password = "pass";
 
 // Create an instance of the web server
@@ -25,8 +25,8 @@ uint32_t toggle = 0x1FE48B7;
 uint32_t blue = 0x1FE906F;
 uint32_t green = 0x1FE10EF;
 uint32_t yellow = 0x1FE50AF;
-uint32_t bUp = 0x1FE58A7;
-uint32_t bDown = 0x1FE7887;
+uint32_t brightnessUp = 0x1FE58A7;
+uint32_t brightnessDown = 0x1FE7887;
 uint32_t warm = 0x1FE20DF;
 uint32_t white = 0x1FE609F;
 
@@ -37,7 +37,7 @@ unsigned long interval = 0;
 int bpm = 125;
 
 // Flag for OTA updates
-bool isOTAEnabled = false;
+bool isOTAEnabled = true;
 
 void setup() {
   // Initialize Serial port
@@ -92,66 +92,93 @@ void loop() {
     strobe(bpm);
   }
 }
-
 void handleRoot() {
   // HTML content to be served
-  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>ESP8266 Controller</title></head><body>";
-  
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Light Controller</title>";
+
+  // Add dark theme CSS
+  html += "<style>";
+  html += "body { background-color: #222; color: #fff; font-family: Arial, sans-serif; padding: 20px; }";
+  html += "button { background-color: #444; color: #fff; border: none; padding: 10px 20px; margin: 5px; cursor: pointer; }";
+  html += "input[type='number'] { padding: 10px; margin: 5px; border-radius: 5px; box-sizing: border-box; }";
+  html += "@media only screen and (max-width: 600px) {";
+  html += "  button { width: 100%; }";
+  html += "  input { width: 100%; }";
+  html += "}";
+  html += "</style>";
+
+  html += "</head><body>";
+
   // Add buttons for each color
-  String colors[] = {"red", "toggle", "blue", "green", "yellow", "bUp", "bDown", "warm", "white"};
+  String colors[] = {"Red", "Toggle", "Blue", "Green", "Yellow", "Brightness +", "Brightness -", "Warm", "White"};
   for (int i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
-    html += "<button style='background-color:#" + String(colors[i]) + "' onclick='sendIR(\"" + String(colors[i]) + "\")'>" + colors[i] + "</button>";
+    html += "<button onclick='sendIR(\"" + colors[i] + "\")'>" + colors[i] + "</button>";
   }
-  
+
   // Add input field for BPM
-  html += "<input type='number' id='bpmInput' placeholder='Enter BPM'>";
-  
+
+html += "<input type='number' id='bpmInput' placeholder='Enter BPM' style='text-align: center;'>";
+
+
+
   // Add strobe button
   html += "<button onclick='toggleStrobe()'>Strobe</button>";
 
   // Add OTA toggle button
   html += "<button id='otaButton' onclick='toggleOTA()'>" + String(isOTAEnabled ? "Disable OTA" : "Enable OTA") + "</button>";
-  
+
+  // // Script to handle button clicks
+  // html += "<script>function sendIR(color) { fetch('/ir?color=' + color); } ";
+  // html += "function toggleStrobe() { var bpm = document.getElementById('bpmInput').value; fetch('/strobe?bpm=' + bpm); }";
+  // html += "function toggleOTA() { fetch('/toggle-ota').then(response => response.text()).then(text => { document.getElementById('otaButton').innerText = text; }); }";
+  // html += "</script>";
+
   // Script to handle button clicks
-  html += "<script>function sendIR(color) {fetch('/ir?color=' + color);} ";
-  html += "function toggleStrobe() {";
-  html += "var bpm = document.getElementById('bpmInput').value;";
-  html += "fetch('/strobe?bpm=' + bpm);}";
-  html += "function toggleOTA() {fetch('/toggle-ota').then(response => response.text()).then(text => {document.getElementById('otaButton').innerText = text;});}</script></body></html>";
-  
+html += "<script>function sendIR(color) { fetch('/ir?color=' + encodeURIComponent(color)); } ";
+html += "function toggleStrobe() { var bpm = document.getElementById('bpmInput').value; fetch('/strobe?bpm=' + bpm); }";
+html += "function toggleOTA() { fetch('/toggle-ota').then(response => response.text()).then(text => { document.getElementById('otaButton').innerText = text; }); }";
+html += "</script>";
+
+  html += "</body></html>";
+
   // Send the HTML page
   server.send(200, "text/html", html);
 }
 
+
+
 void handleIR() {
   // Get the color from the request
   String color = server.arg("color");
+   
   
+  // Print the received color to Serial Monitor for debugging
+  Serial.println("Received color: " + color);
   // Define IR signal codes based on the color
-  uint32_t ir_code;
-  if (color == "red") {
-    ir_code = red;
-  } else if (color == "toggle") {
-    ir_code = toggle;
-  } else if (color == "blue") {
-    ir_code = blue;
-  } else if (color == "green") {
-    ir_code = green;
-  } else if (color == "yellow") {
-    ir_code = yellow;
-  } else if (color == "bUp") {
-    ir_code = bUp;
-  } else if (color == "bDown") {
-    ir_code = bDown;
-  } else if (color == "warm") {
-    ir_code = warm;
-  } else if (color == "white") {
-    ir_code = white;
+  uint32_t irCode;
+  if (color == "Red") {
+    irCode = red;
+  } else if (color == "Toggle") {
+    irCode = toggle;
+  } else if (color == "Blue") {
+    irCode = blue;
+  } else if (color == "Green") {
+    irCode = green;
+  } else if (color == "Yellow") {
+    irCode = yellow;
+  } else if (color == "Brightness +") {
+    irCode = brightnessUp;
+  } else if (color == "Brightness -") {
+    irCode = brightnessDown;
+  } else if (color == "Warm") {
+    irCode = warm;
+  } else if (color == "White") {
+    irCode = white;
   }
-  
   // Send IR signal
-  irsend.sendNEC(ir_code);
-  Serial.println("Sent IR signal for color: " + color);
+  irsend.sendNEC(irCode);
+  Serial.print(irCode);
+  Serial.println(" Sent IR signal for color: " + color);
   
   // Send HTTP response
   server.send(200, "text/plain", "IR signal sent for color: " + color);
@@ -165,7 +192,7 @@ void strobe(int _bpm) {
     irsend.sendNEC(toggle);
     Serial.println("Sent strobe IR signal");
     // Calculate the time interval based on the current BPM
-    interval = 60000 / _bpm / 2; // Half of the interval time to toggle
+    interval = 60000 / _bpm / 2; // Half of the interval time to Toggle
   }
 }
 
