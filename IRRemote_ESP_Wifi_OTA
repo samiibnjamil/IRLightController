@@ -1,3 +1,4 @@
+
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
@@ -6,159 +7,275 @@
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
 
-// IR LED pin
 #define IR_LED_PIN 2
 
-// Define your WiFi credentials
-const char* ssid = "Ssid";
-const char* password = "pass";
+const char* ssid = "Sami";
+const char* password = "bhulegesi";
 
-// Create an instance of the web server
+const char* hotspotSSID = "TechnoLights";
+const int maxConnectionAttempts = 15;  // Maximum attempts to connect to WiFi
+
 ESP8266WebServer server(80);
-
-// Create an instance of the IR transmitter
 IRsend irsend(IR_LED_PIN);
 
-// Define IR signal codes
-uint32_t red = 0x1FEE01F;
-uint32_t toggle = 0x1FE48B7;
-uint32_t blue = 0x1FE906F;
-uint32_t green = 0x1FE10EF;
-uint32_t yellow = 0x1FE50AF;
-uint32_t brightnessUp = 0x1FE58A7;
-uint32_t brightnessDown = 0x1FE7887;
-uint32_t warm = 0x1FE20DF;
-uint32_t white = 0x1FE609F;
+const uint32_t red = 0x1FEE01F;
+const uint32_t toggle = 0x1FE48B7;
+const uint32_t blue = 0x1FE906F;
+const uint32_t green = 0x1FE10EF;
+const uint32_t yellow = 0x1FE50AF;
+const uint32_t brightnessUp = 0x1FE58A7;
+const uint32_t brightnessDown = 0x1FE7887;
+const uint32_t warm = 0x1FE20DF;
+const uint32_t white = 0x1FE609F;
 
-// Variables for strobe function
+const uint32_t colors[] = { red, blue, white };  // Define colors array globally
+
+
 bool isStrobeOn = false;
-unsigned long previousStrobeTime = 0;
-unsigned long interval = 0;
-int bpm = 125;
-
-// Flag for OTA updates
+bool isColorStrobe = false;
 bool isOTAEnabled = true;
+bool ledState = HIGH;
+
+unsigned long previousMillis = 0;
+unsigned long currentMillis = 0;
+unsigned long previousStrobeTime = 0;
+double interval = 0;
+float bpm = 124;
 
 void setup() {
-  // Initialize Serial port
   Serial.begin(115200);
-  Serial.println("Serial initialized");
-
-  // Initialize IR LED
   irsend.begin();
-  Serial.println("IR LED initialized");
+  pinMode(LED_BUILTIN, OUTPUT);
+  connectToWiFi();
+  setupOTA();
+  setupServer();
+}
 
-  // Connect to WiFi
+void loop() {
+
+
+  if (isOTAEnabled) {
+    ArduinoOTA.handle();
+  }
+  server.handleClient();
+  if (isStrobeOn) {
+    handleStrobe();
+  }
+  if (isColorStrobe) {
+    handleColorStrobe();
+  }
+  WifiAP1();
+}
+
+void WifiAP1() {
+  currentMillis = millis();
+
+  if (WiFi.getMode() == 3) {
+
+    if (WiFi.softAPgetStationNum() > 0) {
+      digitalWrite(LED_BUILTIN, LOW);  // Turn on LED when a device is connected
+
+
+      return;  // Exit the function if a device is connected
+    }
+
+    if (currentMillis - previousMillis >= 80) {
+      previousMillis = currentMillis;
+      digitalWrite(LED_BUILTIN, ledState);
+      ledState = !ledState;
+
+      Serial.println("No Device connected ");
+    }
+  }
+}
+
+void connectToWiFi() {
+  digitalWrite(LED_BUILTIN, HIGH);
+  Serial.println(" connectToWiFi() led low");
+  int attemptCount = 0;
   WiFi.begin(ssid, password);
   Serial.println("Connecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("...");
+  while (WiFi.status() != WL_CONNECTED && attemptCount < maxConnectionAttempts) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(400);
+    Serial.print(".");
+    attemptCount++;
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(400);
   }
-  Serial.println("Connected to WiFi");
 
-  // Print ESP8266 IP address
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  if (WiFi.status() == WL_CONNECTED) {
 
-  // Start OTA (Over-The-Air) update service
+    if (WiFi.getMode() == 3) {
+      isOTAEnabled = true;
+      // Connection successful, redirect to the new IP address
+      IPAddress newIP = WiFi.localIP();
+      String redirectURL = "http://" + newIP.toString() + "/";
+      String htmlResponse = "Connected to WiFi. <a href='" + redirectURL + "'>Click here</a> to enter the portal.";
+      server.send(200, "text/html", htmlResponse);
+      delay(7000);
+
+      WiFi.softAPdisconnect(true);  // Disconnect and stop the hotspot
+      Serial.println("Stopped WiFi hotspot");
+    }
+    digitalWrite(LED_BUILTIN, LOW);
+    Serial.println("led h");
+    Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+
+    if (WiFi.getMode() == 3) {
+      server.send(401, "text/html", "Failed to connect to WiFi. Wrong password entered. <a href='http://192.168.1.1'>Click here</a> to try again.");
+
+
+
+    } else {
+      Serial.println("");
+      Serial.println("Failed to connect to WiFi. Starting hotspot...");
+      isOTAEnabled = false;
+      // Start hotspot
+      WiFi.softAP(hotspotSSID, password);
+
+      // Optional: Configure the IP address of the hotspot
+      IPAddress apIP(192, 168, 1, 1);
+      WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+
+      Serial.println("Hotspot started");
+      Serial.print("IP address of the hotspot: ");
+      Serial.println(WiFi.softAPIP());
+    }
+  }
+}
+
+
+void setupOTA() {
   if (isOTAEnabled) {
     ArduinoOTA.begin();
     Serial.println("OTA initialized");
   } else {
     Serial.println("OTA disabled");
   }
+}
 
-  // Start the web server
+void setupServer() {
   server.on("/", handleRoot);
   server.on("/ir", handleIR);
-  server.on("/strobe", handleStrobe);
+  server.on("/toggle-strobe", handleToggleStrobe);
+  server.on("/toggle-colorstrobe", handleToggleColorStrobe);
   server.on("/toggle-ota", handleToggleOTA);
+  server.on("/double-bpm", handleDoubleBPM);
+  server.on("/half-bpm", handleHalfBPM);
+  server.on("/set-bpm", handleSetBPM);
+  server.on("/connect", handleConnect);
   server.begin();
-  Serial.println("HTTP server started");
 }
 
-void loop() {
-  // Handle OTA update service if enabled
-  if (isOTAEnabled) {
-    ArduinoOTA.handle();
-  }
-
-  // Handle web server requests
-  server.handleClient();
-
-  // Handle strobe function if it's on
-  if (isStrobeOn) {
-    strobe(bpm);
-  }
-}
 void handleRoot() {
-  // HTML content to be served
-  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Light Controller</title>";
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Light Controller</title><style>body{background-color:#222;color:#fff;font-family:Arial,sans-serif;padding:20px;}button{background-color:#444;color:#fff;border:none;padding:10px 20px;margin:5px;cursor:pointer;}input[type='number']{padding:10px;margin:5px;border-radius:5px;box-sizing:border-box;}@media only screen and (max-width:600px){button{width:100%;}input{width:100%;}}.strobing { animation: strobe-animation 0.5s infinite alternate;}@keyframes strobe-animation {from {background-color: #444;}to {background-color: #fff;}}</style></head><body><h2 style='text-align:center;font-family:Bebas Neue;'>Techno Lights</h2><div style='text-align:center;'>";
+  if (WiFi.getMode() == 3) {
+    // If in AP mode, display form to enter new WiFi credentials
+    html += "<form method='get' action='/connect'><input type='text' name='ssid' placeholder='New WiFi SSID'><br>";
+    html += "<input type='password' name='password' placeholder='New WiFi Password'><br>";
+    html += "<button type='submit'>Connect to WiFi</button></form>";
+  } else {
+    String light[] = { "Power", "Brightness +", "Brightness -" };
+    for (int i = 0; i < sizeof(light) / sizeof(light[0]); i++) {
+      html += "<button onclick='sendIR(\"" + light[i] + "\")'>" + light[i] + "</button>";
+    }
 
-  // Add dark theme CSS
-  html += "<style>";
-  html += "body { background-color: #222; color: #fff; font-family: Arial, sans-serif; padding: 20px; }";
-  html += "button { background-color: #444; color: #fff; border: none; padding: 10px 20px; margin: 5px; cursor: pointer; }";
-  html += "input[type='number'] { padding: 10px; margin: 5px; border-radius: 5px; box-sizing: border-box; }";
-  html += "@media only screen and (max-width: 600px) {";
-  html += "  button { width: 100%; }";
-  html += "  input { width: 100%; }";
-  html += "}";
-  html += "</style>";
+    html += "</div><div style='text-align:center;'>";
+    String colors[] = { "Red", "Blue", "Green", "Yellow", "Warm", "White" };
+    String textColors[] = { "#EF5350", "#2196F3", "#4CAF50", "#FFEB3B", "#FF9800", "#FFFFFF" };  // Hex codes for text colors
+    for (int i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
+      html += "<button onclick='sendIR(\"" + colors[i] + "\")' style='color: " + textColors[i] + ";'>" + colors[i] + "</button>";
+    }
 
-  html += "</head><body>";
+    html += "</div><div style='text-align:center;'>";
+    html += "<button id='strobeButton' onclick='toggleStrobe()'>" + String(isStrobeOn ? "Stop Strobe" : "Strobe") + "</button>";
+    html += "<button id='colorstrobe' onclick='toggleColorStrobe()'>" + String(isColorStrobe ? "Color Strobe OFF" : "Color Strobe") + "</button>";
+    html += "<input type='number' id='bpmInput' placeholder='Enter BPM' style='text-align:center;' oninput='updateBPM()'>";
+    html += "<button onclick='doubleBPM()'>2x BPM</button>";
+    html += "<button onclick='halfBPM()'>1/2x BPM</button>";
+    html += "<h3 style='text-align:center;'>Current BPM is: <span id='currentBPM'>" + String(bpm) + "</span></h3>";
+    html += "</div><div style='text-align:center;'>";
+    html += "<button id='otaButton' onclick='toggleOTA()'>" + String(isOTAEnabled ? "Disable OTA" : "Enable OTA") + "</button>";
 
-  // Add buttons for each color
-  String colors[] = {"Red", "Toggle", "Blue", "Green", "Yellow", "Brightness +", "Brightness -", "Warm", "White"};
-  for (int i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
-    html += "<button onclick='sendIR(\"" + colors[i] + "\")'>" + colors[i] + "</button>";
+    html += "</div><script>";
+    html += "function sendIR(color){fetch('/ir?color='+encodeURIComponent(color));}";
+    html += "var strobeInterval = " + String(60000 / bpm / 2) + ";";  // Set strobe interval to 1s (1000 milliseconds)
+    //html += "  var  strobeInterval = 60000 / newBPM / 2;";
+    html += "var intervalId;";  // Declare intervalId variable globally
+                                // Function to toggle the strobing effect on the strobeButton
+    html += "function toggleStrobe() {";
+    html += "    var button = document.getElementById('strobeButton');";
+    html += "    if (button.innerText === 'Stop Strobe') {";
+    html += "        button.innerText = 'Strobe';";
+    html += "        stopStrobe('strobeButton');";  // Stop the strobing effect
+    html += "    } else {";
+    html += "        button.innerText = 'Stop Strobe';";
+    html += "        startStrobe('strobeButton');";  // Start the strobing effect
+    html += "    }";
+    html += "    fetch('/toggle-strobe').then(response=>response.text()).then(text=>{document.getElementById('strobeButton').innerText=text;});";
+    html += "}";
+
+
+    html += "function toggleColorStrobe() {";
+    html += "    var button = document.getElementById('colorstrobe');";
+    html += "    if (button.innerText === 'Color Strobe OFF') {";
+    html += "        button.innerText = 'Color Strobe';";
+    html += "        stopStrobe('colorstrobe');";  // Stop the strobing effect
+    html += "    } else {";
+    html += "        button.innerText = 'Color Strobe OFF';";
+    html += "        startStrobe('colorstrobe');";  // Start the strobing effect
+    html += "    }";
+    html += "    fetch('/toggle-colorstrobe').then(response=>response.text()).then(text=>{document.getElementById('colorstrobe').innerText=text;});";
+    html += "}";
+
+
+    html += "function startStrobe(elementId) {";
+    html += " strobeInterval = " + String(60000 / bpm / 2) + ";";
+    html += "    intervalId = setInterval(function() {";
+    html += "        document.getElementById(elementId).classList.toggle('strobing');";
+    html += "    }, strobeInterval);";
+    html += "}";
+    html += "function stopStrobe(elementId) {";
+
+    html += "    clearInterval(intervalId);";
+    html += "    document.getElementById(elementId).classList.remove('strobing');";
+    html += "}";
+
+    html += "function toggleOTA(){fetch('/toggle-ota').then(response=>response.text()).then(text=>{document.getElementById('otaButton').innerText=text;});}";
+    html += "function doubleBPM(){fetch('/double-bpm').then(response=>response.text()).then(text=>{updateCurrentBPM(text);});}";
+    html += "function halfBPM(){fetch('/half-bpm').then(response=>response.text()).then(text=>{updateCurrentBPM(text);});}";
+    html += "function updateCurrentBPM(newBPM){document.getElementById('currentBPM').innerText=newBPM;}";
+    html += "function updateBPM(){var newBPM=document.getElementById('bpmInput').value; fetch('/set-bpm?bpm='+newBPM).then(response=>response.text()).then(text=>{document.getElementById('currentBPM').innerText=text;});}";
+    //html += "function updateBPM(){var newBPM=parseFloat(document.getElementById('bpmInput').value); fetch('/set-bpm?bpm='+newBPM).then(response=>response.text()).then(text=>{document.getElementById('bpmInput').value=text;document.getElementById('currentBPM').innerText=text;});}";
+    html += "</script><footer style='text-align:center;font-weight:bold;font-family:Bebas Neue;'>Developed by Sami Ibn Jamil</footer></body></html>";
+
+    server.send(200, "text/html", html);
   }
-
-  // Add input field for BPM
-
-html += "<input type='number' id='bpmInput' placeholder='Enter BPM' style='text-align: center;'>";
-
-
-
-  // Add strobe button
-  html += "<button onclick='toggleStrobe()'>Strobe</button>";
-
-  // Add OTA toggle button
-  html += "<button id='otaButton' onclick='toggleOTA()'>" + String(isOTAEnabled ? "Disable OTA" : "Enable OTA") + "</button>";
-
-  // // Script to handle button clicks
-  // html += "<script>function sendIR(color) { fetch('/ir?color=' + color); } ";
-  // html += "function toggleStrobe() { var bpm = document.getElementById('bpmInput').value; fetch('/strobe?bpm=' + bpm); }";
-  // html += "function toggleOTA() { fetch('/toggle-ota').then(response => response.text()).then(text => { document.getElementById('otaButton').innerText = text; }); }";
-  // html += "</script>";
-
-  // Script to handle button clicks
-html += "<script>function sendIR(color) { fetch('/ir?color=' + encodeURIComponent(color)); } ";
-html += "function toggleStrobe() { var bpm = document.getElementById('bpmInput').value; fetch('/strobe?bpm=' + bpm); }";
-html += "function toggleOTA() { fetch('/toggle-ota').then(response => response.text()).then(text => { document.getElementById('otaButton').innerText = text; }); }";
-html += "</script>";
-
-  html += "</body></html>";
-
-  // Send the HTML page
-  server.send(200, "text/html", html);
 }
 
-
+void handleConnect() {
+  ssid = server.arg("ssid").c_str();
+  password = server.arg("password").c_str();
+  Serial.print("new ssid ");
+  Serial.println(ssid);
+  Serial.print("new pass: ");
+  Serial.println(password);
+  // WiFi.softAPdisconnect(true); // Disconnect and stop the hotspot
+  // Serial.println("Stopped WiFi hotspot");
+  connectToWiFi();
+}
 
 void handleIR() {
-  // Get the color from the request
   String color = server.arg("color");
-   
-  
-  // Print the received color to Serial Monitor for debugging
-  Serial.println("Received color: " + color);
-  // Define IR signal codes based on the color
   uint32_t irCode;
   if (color == "Red") {
     irCode = red;
-  } else if (color == "Toggle") {
+  } else if (color == "Power") {
     irCode = toggle;
   } else if (color == "Blue") {
     irCode = blue;
@@ -175,52 +292,79 @@ void handleIR() {
   } else if (color == "White") {
     irCode = white;
   }
-  // Send IR signal
   irsend.sendNEC(irCode);
-  Serial.print(irCode);
-  Serial.println(" Sent IR signal for color: " + color);
-  
-  // Send HTTP response
   server.send(200, "text/plain", "IR signal sent for color: " + color);
 }
 
-void strobe(int _bpm) {
+void handleStrobe() {
   unsigned long currentTime = millis();
   if (currentTime - previousStrobeTime >= interval) {
     previousStrobeTime = currentTime;
-    // Toggle the LED state
     irsend.sendNEC(toggle);
-    Serial.println("Sent strobe IR signal");
-    // Calculate the time interval based on the current BPM
-    interval = 60000 / _bpm / 2; // Half of the interval time to Toggle
+    irsend.sendNEC(toggle);
+    digitalWrite(LED_BUILTIN, ledState);
+    ledState = !ledState;
+    interval = 60000 / bpm;
+    Serial.print("interval: ");
+    Serial.println(interval);
   }
 }
 
-void handleStrobe() {
-  // Toggle strobe function on/off
-  isStrobeOn = !isStrobeOn;
-  Serial.println("Strobe " + String(isStrobeOn ? "ON" : "OFF"));
-  
-  // Set BPM if provided in the request
-  if (server.hasArg("bpm")) {
-    bpm = server.arg("bpm").toInt();
-    Serial.println("BPM set to " + String(bpm));
+void handleColorStrobe() {
+  unsigned long currentTime = millis();
+  if (currentTime - previousStrobeTime >= interval) {
+    previousStrobeTime = currentTime;
+    int colorIndex = random(3);  // Index of colors array
+    irsend.sendNEC(toggle);
+    irsend.sendNEC(colors[colorIndex]);
+    irsend.sendNEC(toggle);
+    digitalWrite(LED_BUILTIN, ledState);
+    ledState = !ledState;
+    interval = 60000 / bpm;
+    Serial.print("interval: ");
+    Serial.println(interval);
   }
-  
+}
+
+void handleToggleStrobe() {
+  isStrobeOn = !isStrobeOn;
   if (isStrobeOn) {
-    // Initialize strobe function
     previousStrobeTime = millis();
     interval = 60000 / bpm / 2;
   }
-  // Send HTTP response
-  server.send(200, "text/plain", "Strobe " + String(isStrobeOn ? "ON" : "OFF"));
+  server.send(200, "text/plain", String(isStrobeOn ? "Stop Strobe" : "Strobe"));
+}
+
+void handleToggleColorStrobe() {
+  isColorStrobe = !isColorStrobe;
+  if (isColorStrobe) {
+    previousStrobeTime = millis();
+    interval = 60000 / bpm / 2;
+  }
+  server.send(200, "text/plain", String(isColorStrobe ? "Color Strobe OFF" : "Color Strobe"));
 }
 
 void handleToggleOTA() {
-  // Toggle OTA updates on/off
   isOTAEnabled = !isOTAEnabled;
-  Serial.println("OTA " + String(isOTAEnabled ? "enabled" : "disabled"));
-  
-  // Send HTTP response with appropriate text
   server.send(200, "text/plain", String(isOTAEnabled ? "Disable OTA" : "Enable OTA"));
+}
+
+void handleDoubleBPM() {
+  bpm *= 2;
+  interval = 60000 / bpm / 2;
+  server.send(200, "text/plain", String(bpm));
+}
+
+void handleHalfBPM() {
+  bpm /= 2;
+  interval = 60000 / bpm / 2;
+  server.send(200, "text/plain", String(bpm));
+}
+
+void handleSetBPM() {
+  if (server.hasArg("bpm")) {
+    bpm = server.arg("bpm").toInt();
+    interval = 60000 / bpm / 2;
+  }
+  server.send(200, "text/plain", String(bpm));
 }
