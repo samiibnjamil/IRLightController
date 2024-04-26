@@ -9,8 +9,8 @@
 
 #define IR_LED_PIN 2
 
-const char* ssid = "Sami";
-const char* password = "bhulegesi";
+const char* ssid = "ssid";
+const char* password = "pass";
 
 const char* hotspotSSID = "TechnoLights";
 const int maxConnectionAttempts = 15;  // Maximum attempts to connect to WiFi
