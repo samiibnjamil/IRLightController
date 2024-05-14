@@ -1,25 +1,20 @@
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <ESP8266mDNS.h>
-#include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
+#include <LittleFS.h>
 
-#define IR_LED_PIN 2
-
-const char* ssid = "ssid";
-const char* password = "pass";
-
+#define IR_LED_PIN 3
+//#define LED_BUILTIN 2 // Assuming LED_BUILTIN is connected to GPIO 2 on ESP8266
+String availableNetworks[] = {};
+const char* ssid = "Sami";
+const char* password = "bhulegesi";
+const char* hotspotpassword = "bhulegesi";
 const char* hotspotSSID = "TechnoLights";
-const int maxConnectionAttempts = 15;  // Maximum attempts to connect to WiFi
-
-ESP8266WebServer server(80);
-IRsend irsend(IR_LED_PIN);
+const int maxConnectionAttempts = 15;
 
 const uint32_t red = 0x1FEE01F;
-const uint32_t toggle = 0x1FE48B7;
 const uint32_t blue = 0x1FE906F;
 const uint32_t green = 0x1FE10EF;
 const uint32_t yellow = 0x1FE50AF;
@@ -27,9 +22,9 @@ const uint32_t brightnessUp = 0x1FE58A7;
 const uint32_t brightnessDown = 0x1FE7887;
 const uint32_t warm = 0x1FE20DF;
 const uint32_t white = 0x1FE609F;
-
-const uint32_t colors[] = { red, blue, white };  // Define colors array globally
-
+const uint32_t toggle = 0x1FE48B7;
+const uint32_t colors[] = { red, blue, green, yellow, warm, white };
+int entryCount = 10;
 
 bool isStrobeOn = false;
 bool isColorStrobe = false;
@@ -42,113 +37,97 @@ unsigned long previousStrobeTime = 0;
 double interval = 0;
 float bpm = 124;
 
-void setup() {
-  Serial.begin(115200);
-  irsend.begin();
-  pinMode(LED_BUILTIN, OUTPUT);
-  connectToWiFi();
-  setupOTA();
-  setupServer();
-}
+ESP8266WebServer server(80);
 
-void loop() {
+IRsend irsend(IR_LED_PIN);
 
 
-  if (isOTAEnabled) {
-    ArduinoOTA.handle();
-  }
-  server.handleClient();
-  if (isStrobeOn) {
-    handleStrobe();
-  }
-  if (isColorStrobe) {
-    handleColorStrobe();
-  }
-  WifiAP1();
-}
+struct WiFiCredential {
+  char ssid[32];
+  char password[64];
+};
 
 void WifiAP1() {
   currentMillis = millis();
-
   if (WiFi.getMode() == 3) {
-
-    if (WiFi.softAPgetStationNum() > 0) {
-      digitalWrite(LED_BUILTIN, LOW);  // Turn on LED when a device is connected
-
-
+    if (WiFi.softAPgetStationNum() > 0) {  // Check if any station is connected
+                                           // Turn on LED to indicate device connection
+      digitalWrite(LED_BUILTIN, LOW);
+      Serial.println("Device connected ");
       return;  // Exit the function if a device is connected
     }
-
-    if (currentMillis - previousMillis >= 80) {
+    if (currentMillis - previousMillis >= 50) {
       previousMillis = currentMillis;
       digitalWrite(LED_BUILTIN, ledState);
       ledState = !ledState;
-
-      Serial.println("No Device connected ");
+      //Serial.println("No Device connected ");
     }
   }
 }
 
-void connectToWiFi() {
+bool connectToWiFi(const char* ssid, const char* password) {
   digitalWrite(LED_BUILTIN, HIGH);
-  Serial.println(" connectToWiFi() led low");
-  int attemptCount = 0;
   WiFi.begin(ssid, password);
   Serial.println("Connecting to WiFi...");
+  int attemptCount = 0;
+  const int maxConnectionAttempts = 20;  // Set maximum attempts for connection
+
   while (WiFi.status() != WL_CONNECTED && attemptCount < maxConnectionAttempts) {
     digitalWrite(LED_BUILTIN, HIGH);
-    delay(400);
+    delay(300);
     Serial.print(".");
     attemptCount++;
     digitalWrite(LED_BUILTIN, LOW);
-    delay(400);
+    delay(300);
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
+  bool isConnected = (WiFi.status() == WL_CONNECTED);
 
+  if (isConnected) {
+    // Check if AP mode was on
     if (WiFi.getMode() == 3) {
       isOTAEnabled = true;
-      // Connection successful, redirect to the new IP address
+      // Connection successful, send response with IP address
       IPAddress newIP = WiFi.localIP();
       String redirectURL = "http://" + newIP.toString() + "/";
       String htmlResponse = "Connected to WiFi. <a href='" + redirectURL + "'>Click here</a> to enter the portal.";
       server.send(200, "text/html", htmlResponse);
       delay(7000);
-
       WiFi.softAPdisconnect(true);  // Disconnect and stop the hotspot
       Serial.println("Stopped WiFi hotspot");
     }
     digitalWrite(LED_BUILTIN, LOW);
-    Serial.println("led h");
     Serial.println("");
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
   } else {
+    // Connection failed
+    digitalWrite(LED_BUILTIN, LOW);
+    Serial.println("");
+    Serial.println("Failed to connect to WiFi.");
 
+    // Check if AP mode was on
     if (WiFi.getMode() == 3) {
       server.send(401, "text/html", "Failed to connect to WiFi. Wrong password entered. <a href='http://192.168.1.1'>Click here</a> to try again.");
-
-
-
     } else {
-      Serial.println("");
-      Serial.println("Failed to connect to WiFi. Starting hotspot...");
-      isOTAEnabled = false;
-      // Start hotspot
-      WiFi.softAP(hotspotSSID, password);
 
-      // Optional: Configure the IP address of the hotspot
-      IPAddress apIP(192, 168, 1, 1);
-      WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
 
-      Serial.println("Hotspot started");
-      Serial.print("IP address of the hotspot: ");
-      Serial.println(WiFi.softAPIP());
+      if (!connectSavedNetwork()) {
+        Serial.println("Starting hotspot...");
+        isOTAEnabled = false;
+        WiFi.softAP(hotspotSSID, hotspotpassword);
+        IPAddress apIP(192, 168, 1, 1);
+        WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+        Serial.println("Hotspot started");
+        Serial.print("IP address of the hotspot: ");
+        Serial.println(WiFi.softAPIP());
+      }
     }
   }
-}
 
+  return isConnected;
+}
 
 void setupOTA() {
   if (isOTAEnabled) {
@@ -159,8 +138,184 @@ void setupOTA() {
   }
 }
 
+
+bool loadSSID(WiFiCredential* credentials, int maxEntries, int& loadedEntries) {
+  File file = LittleFS.open("/config.txt", "r");
+  if (!file) {
+    Serial.println("Failed to open config file for reading");
+    return false;  // Return false to indicate failure
+  }
+
+  entryCount = 0;
+  loadedEntries = 0;
+
+  // Read until the end of the file
+  while (file.available() && entryCount < maxEntries) {
+    String savedSSID = file.readStringUntil('\n');
+    if (savedSSID.length() > 0) {
+      savedSSID.trim();
+      savedSSID.toCharArray(credentials[entryCount].ssid, sizeof(credentials[entryCount].ssid));
+
+      String savedPassword = file.readStringUntil('\n');
+      if (savedPassword.length() > 0) {
+        savedPassword.trim();
+        savedPassword.toCharArray(credentials[entryCount].password, sizeof(credentials[entryCount].password));
+
+        entryCount++;
+      }
+    }
+  }
+
+  file.close();
+  loadedEntries = entryCount;
+  Serial.print("entryCount: ");
+  Serial.println(entryCount);
+  return loadedEntries > 0;
+}
+void printFileContents(const char* filename) {
+  // Open the file in read mode
+  File file = LittleFS.open(filename, "r");
+  if (!file) {
+    Serial.println("Failed to open file for reading");
+    return;
+  }
+
+  Serial.println("Contents of file:");
+  while (file.available()) {
+    Serial.write(file.read());
+  }
+  Serial.println();  // Print a new line after the file content
+
+  // Close the file
+  file.close();
+}
+
+// Function to check if the given SSID-password combination already exists in the list
+bool isSSIDPasswordExists(const char* ssid, const char* password) {
+  File file = LittleFS.open("/config.txt", "r");
+  if (!file) {
+    Serial.println("Failed to open config file for reading");
+    return false;
+  }
+
+  bool exists = false;
+  char savedSSID[32];
+  char savedPassword[64];
+
+  // Read lines until end of file
+  while (file.available()) {
+    String line1 = file.readStringUntil('\n');  // Read the SSID line
+    String line2 = file.readStringUntil('\n');  // Read the password line
+
+    line1.trim();
+    line2.trim();
+
+    // Copy to char arrays for comparison
+    line1.toCharArray(savedSSID, sizeof(savedSSID));
+    line2.toCharArray(savedPassword, sizeof(savedPassword));
+    Serial.print(savedSSID);
+    Serial.print("=");
+    Serial.println(ssid);
+    Serial.print(savedPassword);
+    Serial.print("=");
+    Serial.println(password);
+    // Compare saved SSID and password with provided parameters
+    if (strcmp(savedSSID, ssid) == 0) {
+      exists = true;
+      Serial.println("found a match");
+      break;
+    } else {
+      Serial.println("No match");
+    }
+  }
+
+  file.close();
+  return exists;
+}
+
+void saveSSID(const char* ssid, const char* password) {
+  if (isSSIDPasswordExists(ssid, password)) {
+    Serial.println("WiFi credentials already exist in the list");
+    return;
+  }
+
+  File file = LittleFS.open("/config.txt", "a");
+  if (!file) {
+    Serial.println("Failed to open config file for appending");
+    return;
+  }
+
+  // Append the new SSID and password to the file
+  file.println(ssid);
+  file.println(password);
+  file.close();
+
+  Serial.println("WiFi credentials saved to config file");
+}
+
+void deleteSSIDFromConfig(const char* ssidToDelete, const char* passwordToDelete) {
+  // Open the config file for reading
+  File file = LittleFS.open("/config.txt", "r");
+  if (!file) {
+    Serial.println("Failed to open config file for reading");
+    return;
+  }
+
+  // Create a temporary file for storing updated contents
+  File tempFile = LittleFS.open("/temp.txt", "w");
+  if (!tempFile) {
+    Serial.println("Failed to create temp file");
+    file.close();
+    return;
+  }
+
+  char savedSSID[32];
+  char savedPassword[64];
+
+  // Read lines until end of file
+  while (file.available()) {
+    // Read the SSID line
+    String line1 = file.readStringUntil('\n');
+    line1.trim();
+    line1.toCharArray(savedSSID, sizeof(savedSSID));
+
+    // Read the password line
+    String line2 = file.readStringUntil('\n');
+    line2.trim();
+    line2.toCharArray(savedPassword, sizeof(savedPassword));
+
+    // Compare saved SSID and password with the ones to delete
+    if (strcmp(savedSSID, ssidToDelete) != 0 || strcmp(savedPassword, passwordToDelete) != 0) {
+      // Write to temp file if it's not the line to delete
+      tempFile.println(savedSSID);
+      tempFile.println(savedPassword);
+    }
+  }
+
+  // Close both files
+  file.close();
+  tempFile.close();
+
+  // Remove the original config file
+  if (!LittleFS.remove("/config.txt")) {
+    Serial.println("Failed to remove original config file");
+    return;
+  }
+
+  // Rename the temp file to the original config file
+  if (!LittleFS.rename("/temp.txt", "/config.txt")) {
+    Serial.println("Failed to rename temp file to config file");
+    return;
+  }
+
+  Serial.println("SSID deleted from config successfully");
+}
+
 void setupServer() {
   server.on("/", handleRoot);
+  server.on("/settings", handleSettings);
+  server.on("/control", handleControl);
+  server.on("/connect", handleConnect);
   server.on("/ir", handleIR);
   server.on("/toggle-strobe", handleToggleStrobe);
   server.on("/toggle-colorstrobe", handleToggleColorStrobe);
@@ -168,106 +323,54 @@ void setupServer() {
   server.on("/double-bpm", handleDoubleBPM);
   server.on("/half-bpm", handleHalfBPM);
   server.on("/set-bpm", handleSetBPM);
-  server.on("/connect", handleConnect);
+  server.on("/restart-esp", HTTP_GET, handleRestartESP);
+  server.on("/scan-networks", HTTP_GET, handleScanNetworks);
+  server.on("/delete-ssid", HTTP_POST, handleDeleteSSID);
   server.begin();
 }
 
 void handleRoot() {
-  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Light Controller</title><style>body{background-color:#222;color:#fff;font-family:Arial,sans-serif;padding:20px;}button{background-color:#444;color:#fff;border:none;padding:10px 20px;margin:5px;cursor:pointer;}input[type='number']{padding:10px;margin:5px;border-radius:5px;box-sizing:border-box;}@media only screen and (max-width:600px){button{width:100%;}input{width:100%;}}.strobing { animation: strobe-animation 0.5s infinite alternate;}@keyframes strobe-animation {from {background-color: #444;}to {background-color: #fff;}}</style></head><body><h2 style='text-align:center;font-family:Bebas Neue;'>Techno Lights</h2><div style='text-align:center;'>";
-  if (WiFi.getMode() == 3) {
-    // If in AP mode, display form to enter new WiFi credentials
-    html += "<form method='get' action='/connect'><input type='text' name='ssid' placeholder='New WiFi SSID'><br>";
-    html += "<input type='password' name='password' placeholder='New WiFi Password'><br>";
-    html += "<button type='submit'>Connect to WiFi</button></form>";
-  } else {
-    String light[] = { "Power", "Brightness +", "Brightness -" };
-    for (int i = 0; i < sizeof(light) / sizeof(light[0]); i++) {
-      html += "<button onclick='sendIR(\"" + light[i] + "\")'>" + light[i] + "</button>";
-    }
+  String html = generateHomePage();
+  server.send(200, "text/html", html);
+}
 
-    html += "</div><div style='text-align:center;'>";
-    String colors[] = { "Red", "Blue", "Green", "Yellow", "Warm", "White" };
-    String textColors[] = { "#EF5350", "#2196F3", "#4CAF50", "#FFEB3B", "#FF9800", "#FFFFFF" };  // Hex codes for text colors
-    for (int i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
-      html += "<button onclick='sendIR(\"" + colors[i] + "\")' style='color: " + textColors[i] + ";'>" + colors[i] + "</button>";
-    }
+void handleSettings() {
+  String html = generateSettingsPage();
+  server.send(200, "text/html", html);
+}
 
-    html += "</div><div style='text-align:center;'>";
-    html += "<button id='strobeButton' onclick='toggleStrobe()'>" + String(isStrobeOn ? "Stop Strobe" : "Strobe") + "</button>";
-    html += "<button id='colorstrobe' onclick='toggleColorStrobe()'>" + String(isColorStrobe ? "Color Strobe OFF" : "Color Strobe") + "</button>";
-    html += "<input type='number' id='bpmInput' placeholder='Enter BPM' style='text-align:center;' oninput='updateBPM()'>";
-    html += "<button onclick='doubleBPM()'>2x BPM</button>";
-    html += "<button onclick='halfBPM()'>1/2x BPM</button>";
-    html += "<h3 style='text-align:center;'>Current BPM is: <span id='currentBPM'>" + String(bpm) + "</span></h3>";
-    html += "</div><div style='text-align:center;'>";
-    html += "<button id='otaButton' onclick='toggleOTA()'>" + String(isOTAEnabled ? "Disable OTA" : "Enable OTA") + "</button>";
-
-    html += "</div><script>";
-    html += "function sendIR(color){fetch('/ir?color='+encodeURIComponent(color));}";
-    html += "var strobeInterval = " + String(60000 / bpm / 2) + ";";  // Set strobe interval to 1s (1000 milliseconds)
-    //html += "  var  strobeInterval = 60000 / newBPM / 2;";
-    html += "var intervalId;";  // Declare intervalId variable globally
-                                // Function to toggle the strobing effect on the strobeButton
-    html += "function toggleStrobe() {";
-    html += "    var button = document.getElementById('strobeButton');";
-    html += "    if (button.innerText === 'Stop Strobe') {";
-    html += "        button.innerText = 'Strobe';";
-    html += "        stopStrobe('strobeButton');";  // Stop the strobing effect
-    html += "    } else {";
-    html += "        button.innerText = 'Stop Strobe';";
-    html += "        startStrobe('strobeButton');";  // Start the strobing effect
-    html += "    }";
-    html += "    fetch('/toggle-strobe').then(response=>response.text()).then(text=>{document.getElementById('strobeButton').innerText=text;});";
-    html += "}";
-
-
-    html += "function toggleColorStrobe() {";
-    html += "    var button = document.getElementById('colorstrobe');";
-    html += "    if (button.innerText === 'Color Strobe OFF') {";
-    html += "        button.innerText = 'Color Strobe';";
-    html += "        stopStrobe('colorstrobe');";  // Stop the strobing effect
-    html += "    } else {";
-    html += "        button.innerText = 'Color Strobe OFF';";
-    html += "        startStrobe('colorstrobe');";  // Start the strobing effect
-    html += "    }";
-    html += "    fetch('/toggle-colorstrobe').then(response=>response.text()).then(text=>{document.getElementById('colorstrobe').innerText=text;});";
-    html += "}";
-
-
-    html += "function startStrobe(elementId) {";
-    html += " strobeInterval = " + String(60000 / bpm / 2) + ";";
-    html += "    intervalId = setInterval(function() {";
-    html += "        document.getElementById(elementId).classList.toggle('strobing');";
-    html += "    }, strobeInterval);";
-    html += "}";
-    html += "function stopStrobe(elementId) {";
-
-    html += "    clearInterval(intervalId);";
-    html += "    document.getElementById(elementId).classList.remove('strobing');";
-    html += "}";
-
-    html += "function toggleOTA(){fetch('/toggle-ota').then(response=>response.text()).then(text=>{document.getElementById('otaButton').innerText=text;});}";
-    html += "function doubleBPM(){fetch('/double-bpm').then(response=>response.text()).then(text=>{updateCurrentBPM(text);});}";
-    html += "function halfBPM(){fetch('/half-bpm').then(response=>response.text()).then(text=>{updateCurrentBPM(text);});}";
-    html += "function updateCurrentBPM(newBPM){document.getElementById('currentBPM').innerText=newBPM;}";
-    html += "function updateBPM(){var newBPM=document.getElementById('bpmInput').value; fetch('/set-bpm?bpm='+newBPM).then(response=>response.text()).then(text=>{document.getElementById('currentBPM').innerText=text;});}";
-    //html += "function updateBPM(){var newBPM=parseFloat(document.getElementById('bpmInput').value); fetch('/set-bpm?bpm='+newBPM).then(response=>response.text()).then(text=>{document.getElementById('bpmInput').value=text;document.getElementById('currentBPM').innerText=text;});}";
-    html += "</script><footer style='text-align:center;font-weight:bold;font-family:Bebas Neue;'>Developed by Sami Ibn Jamil</footer></body></html>";
-
-    server.send(200, "text/html", html);
-  }
+void handleControl() {
+  String html = generateControlPage();
+  server.send(200, "text/html", html);
 }
 
 void handleConnect() {
-  ssid = server.arg("ssid").c_str();
-  password = server.arg("password").c_str();
-  Serial.print("new ssid ");
-  Serial.println(ssid);
-  Serial.print("new pass: ");
-  Serial.println(password);
-  // WiFi.softAPdisconnect(true); // Disconnect and stop the hotspot
-  // Serial.println("Stopped WiFi hotspot");
-  connectToWiFi();
+
+  const char* ssidTemp = server.arg("ssid").c_str();
+  const char* passwordTemp = server.arg("password").c_str();
+  if (strcmp(ssidTemp, ssid) == 0) {
+    Serial.println("same ssid as default");
+    if (connectToWiFi(ssid, password)) {
+      // Connection successful, save the SSID and password
+      saveSSID(ssid, password);
+      Serial.println("saved default ssid");
+    }
+  } else {
+    Serial.println("New SSID");
+    if (connectToWiFi(ssidTemp, passwordTemp)) {
+
+      // Connection successful, save the SSID and password
+      saveSSID(ssidTemp, passwordTemp);
+
+    } else {
+      // Connection failed, do not save the SSID and password
+      Serial.println("Failed to connect to WiFi. SSID and password not saved. check password");
+      // Optionally handle failure cases (e.g., provide feedback to the user)
+    }
+  }
+
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
 }
 
 void handleIR() {
@@ -294,6 +397,52 @@ void handleIR() {
   }
   irsend.sendNEC(irCode);
   server.send(200, "text/plain", "IR signal sent for color: " + color);
+}
+
+void handleToggleStrobe() {
+  isStrobeOn = !isStrobeOn;
+  if (isStrobeOn) {
+    previousStrobeTime = millis();
+    interval = 60000 / bpm / 2;
+  }
+  server.send(200, "text/plain", String(isStrobeOn ? "Strobe OFF" : "Strobe"));
+}
+
+void handleToggleColorStrobe() {
+  isColorStrobe = !isColorStrobe;
+  if (isColorStrobe) {
+    previousStrobeTime = millis();
+    interval = 60000 / bpm / 2;
+  }
+  server.send(200, "text/plain", String(isColorStrobe ? "Color Strobe OFF" : "Color Strobe"));
+}
+
+void handleToggleOTA() {
+  isOTAEnabled = !isOTAEnabled;
+  if (isOTAEnabled) {
+    setupOTA();
+  }
+  server.send(200, "text/plain", String(isOTAEnabled ? "Disable OTA" : "Enable OTA"));
+}
+
+void handleDoubleBPM() {
+  bpm *= 2;
+  interval = 60000 / bpm / 2;
+  server.send(200, "text/plain", String(bpm));
+}
+
+void handleHalfBPM() {
+  bpm /= 2;
+  interval = 60000 / bpm / 2;
+  server.send(200, "text/plain", String(bpm));
+}
+
+void handleSetBPM() {
+  if (server.hasArg("bpm")) {
+    bpm = server.arg("bpm").toInt();
+    interval = 60000 / bpm / 2;
+  }
+  server.send(200, "text/plain", String(bpm));
 }
 
 void handleStrobe() {
@@ -326,45 +475,407 @@ void handleColorStrobe() {
   }
 }
 
-void handleToggleStrobe() {
-  isStrobeOn = !isStrobeOn;
+bool connectSavedNetwork() {
+  Serial.println("checking saved WiFi...");
+  // Scan for available networks
+  int numNetworks = WiFi.scanNetworks();
+
+  if (numNetworks == 0) {
+    Serial.println("No WiFi networks found");
+    return false;  // No networks available to connect to
+  }
+
+  Serial.print("Total available networks: ");
+  Serial.println(numNetworks);
+
+  // Temporary storage for available SSIDs
+  String availableSSIDs[numNetworks];  // Array to store SSIDs
+  int numAvailableSSIDs = 0;
+
+  Serial.println("Available WiFi networks:");
+  for (int i = 0; i < numNetworks; ++i) {
+    availableSSIDs[i] = WiFi.SSID(i);
+
+    numAvailableSSIDs++;
+
+    // Optional: You can limit the number of SSIDs stored if needed
+    // if (numAvailableSSIDs >= sizeof(availableSSIDs) / sizeof(availableSSIDs[0])) {
+    //   break;  // Stop if reached the maximum number of SSIDs to store
+    // }
+  }
+  // Open config file to read saved SSIDs and passwords
+  File file = LittleFS.open("/config.txt", "r");
+  if (!file) {
+    Serial.println("Failed to open config file for reading");
+    return false;
+  }
+  bool connected = false;
+  // Read lines from config file and compare with available SSIDs
+  while (file.available()) {
+    String line1 = file.readStringUntil('\n');  // Read the SSID line
+    String line2 = file.readStringUntil('\n');  // Read the password line
+
+    line1.trim();
+    line2.trim();
+
+    // Compare saved SSID with available SSIDs
+    for (int i = 0; i < numAvailableSSIDs; ++i) {
+      Serial.println("checking:");
+      Serial.println(availableSSIDs[i]);
+      if (line1.equals(availableSSIDs[i])) {
+        // Found a match, try to connect using the saved credentials
+        Serial.print("WiFi found: ");
+        Serial.println(availableSSIDs[i]);
+        WiFi.begin(line1.c_str(), line2.c_str());
+        Serial.println("Connecting to WiFi...");
+
+        // Wait for WiFi connection
+        unsigned long startTime = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {
+          delay(500);
+        }
+
+        if (WiFi.status() == WL_CONNECTED) {
+          Serial.println("WiFi found and Connected!");
+          connected = true;
+          break;  // Stop searching for this SSID
+        } else {
+          Serial.println("Failed to connect to WiFi.");
+        }
+      }
+    }
+  }
+  file.close();
+  return connected;
+}
+
+void handleRestartESP() {
+  ESP.restart();  // Restart the ESP8266
+}
+
+void handleScanNetworks() {
+  // Scan for available WiFi networks
+  int numNetworks = WiFi.scanNetworks();
+  // Prepare JSON response
+  String response = "[";
+
+  // Iterate over scanned networks and add to JSON response
+  for (int i = 0; i < numNetworks; i++) {
+    if (i > 0) {
+      response += ",";
+    }
+    response += "{\"ssid\":\"" + WiFi.SSID(i) + "\"}";
+  }
+  response += "]";
+  // Send JSON response
+  server.send(200, "application/json", response);
+}
+
+void handleDeleteSSID() {
+  if (server.method() == HTTP_POST) {
+    String ssid = server.arg("ssid");
+    String password = server.arg("password");
+    // Convert String to const char* for passing to deleteSSIDFromConfig
+    const char* ssidToDelete = ssid.c_str();
+    const char* passwordToDelete = password.c_str();
+    // Call the deletion function with the provided parameters
+    deleteSSIDFromConfig(ssidToDelete, passwordToDelete);
+
+    server.send(200, "text/plain", "SSID deleted");
+  } else {
+    server.send(400, "text/plain", "Invalid request method");
+  }
+}
+
+String generateHomePage() {
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>Light Controller - Settings</title>";
+  if (WiFi.getMode() != 3) {
+    html += "<link rel='stylesheet' href='https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css'>";
+  }
+  html += "<style>body{background-color:#222;color:#fff;font-family:Arial,sans-serif;padding:20px;text-align:center;}";
+  html += "button{background-color:#444;color:#fff;border:none;padding:10px 20px;margin:5px;cursor:pointer;}";
+  html += "{padding:10px;margin:5px;border-radius:5px;box-sizing:border-box;width:80%;}";
+  html += "@media only screen and (max-width:600px){button,input{width:100%;}}</style>";
+  html += "</head><body>";
+  html += "<h2 style='text-align:center;font-family:Bebas Neue;'>Welcome to Techno Lights</h2>";
+  // Display WiFi status and connection details
+  html += "<div style='text-align:center;'>";
+  if (WiFi.status() == WL_CONNECTED) {
+    html += "<p style='color: green;'><i class='fas fa-wifi'></i> WiFi Connected: " + WiFi.SSID() + "</p>";
+    html += "<p><i class='fas fa-signal'";
+    html += "'></i> Signal Strength: ";
+
+    if (WiFi.RSSI() > -50) {
+      html += "<span style='color: green;'>▰▰▰</span>";  // Strong signal (3 bars)
+    } else if (WiFi.RSSI() > -70) {
+      html += "<span style='color: yellow;'>▰▰</span>";  // Moderate signal (2 bars)
+    } else {
+      html += "<span style='color: red;'>▰</span>";  // Weak signal (1 bar)
+    }
+    html += "</p>";
+
+  } else {
+    html += "<p style='color: red;'><i class='fas fa-wifi'></i> AP Mode SSID: TechnoLights</p>";
+  }
+  html += "<div><a href='/control'><button>Techno Lights</button></a></div>";
+  html += "<div><a href='/settings'><button>Settings</button></a></div>";
+  html += "</div>";
+  html += "<footer style='text-align:center;font-weight:bold;font-family:Bebas Neue;'>Developed by Sami Ibn Jamil</footer>";
+  html += "</body></html>";
+  return html;
+}
+
+String generateSettingsPage() {
+  // Load stored WiFi credentials
+  WiFiCredential credentials[entryCount + 2];  // Adjust size based on your needs
+  int loadedEntries = 0;
+  bool wifiSaved = loadSSID(credentials, entryCount + 2, loadedEntries);
+
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>Light Controller - Settings</title>";
+  html += "<style>body{background-color:#222;color:#fff;font-family:Arial,sans-serif;padding:20px;text-align:center;}";
+  html += "button{background-color:#444;color:#fff;border:none;padding:10px 20px;margin:5px;cursor:pointer;}";
+  html += "input[type='text'], input[type='password'], select{padding:10px;margin:5px;border-radius:5px;box-sizing:border-box;width:30%;}";
+  html += "@media only screen and (max-width:600px){button,input,select{width:80%;}}</style>";
+  html += "</head><body>";
+
+  html += "<h2 style='font-family:Bebas Neue;'>Settings</h2>";
+  // JavaScript function to show/hide WiFi settings and trigger network scan
+  html += "<script>";
+  html += "function toggleWiFiSettings() {";
+  html += "  var wifiSettingsDiv = document.getElementById('wifiSettings');";
+  html += "  wifiSettingsDiv.style.display = (wifiSettingsDiv.style.display === 'none' ? 'block' : 'none');";
+  html += "  if (wifiSettingsDiv.style.display === 'block') {";
+
+  html += "  }";
+  html += "}";
+  html += "function toggleScanForNetworks() {";
+  html += "  var scanNetworksDiv = document.getElementById('scanNetworks');";
+  html += "  scanNetworksDiv.style.display = (scanNetworksDiv.style.display === 'none' ? 'block' : 'none');";
+  html += "    scanAndListNetworks();";  // Trigger network scan when WiFi settings are displayed
+  html += "}";
+
+  html += "function connectToSavedWiFi() {";
+  html += "  var ssid = document.getElementById('savedNetworks').value;";
+  html += "  var password = document.getElementById('savedNetworks').selectedOptions[0].getAttribute('data-password');";
+  html += "  if (ssid) {";
+  html += "    window.location.href = '/connect?ssid=' + ssid + '&password=' + password;";
+  html += "  } else {";
+  html += "    alert('Please select a WiFi network.');";
+  html += "  }";
+  html += "}";
+
+  html += "function scanAndListNetworks() {";
+  html += "  fetch('/scan-networks').then(response => response.json()).then(networks => {";
+  html += "    var selectElement = document.getElementById('availableNetworks');";
+  html += "    selectElement.innerHTML = '';";  // Clear existing options
+  html += "    networks.forEach(network => {";
+  html += "      var option = document.createElement('option');";
+  html += "      option.value = network.ssid;";
+  html += "      option.text = network.ssid;";
+  html += "      selectElement.appendChild(option);";
+  html += "    });";
+  html += "  });";
+  html += "}";
+
+  html += "function deleteSelectedWiFi() {";
+  html += "  var ssid = document.getElementById('savedNetworks').value;";
+  html += "  var password = document.getElementById('savedNetworks').selectedOptions[0].getAttribute('data-password');";
+  html += "  if (ssid) {";
+  html += "    fetch('/delete-ssid', {";
+  html += "      method: 'POST',";
+  html += "      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },";
+  html += "      body: 'ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(password)";
+  html += "    }).then(response => {";
+  html += "      if (response.ok) {";
+  html += "        alert('SSID deleted successfully.');";
+  html += "        window.location.reload();";  // Refresh the page after deletion
+  html += "      } else {";
+  html += "        alert('Failed to delete SSID.');";
+  html += "      }";
+  html += "    }).catch(error => {";
+  html += "      console.error('Error deleting SSID:', error);";
+  html += "      alert('An error occurred while deleting SSID.');";
+  html += "    });";
+  html += "  } else {";
+  html += "    alert('Please select a WiFi network to delete.');";
+  html += "  }";
+  html += "}";
+  html += "function toggleOTA() { fetch('/toggle-ota').then(response => response.text()).then(text => { document.getElementById('otaButton').innerText = text; }); }";
+  html += "function restartESP() { fetch('/restart-esp'); }";  // Send request to restart ESP8266
+  html += "</script>";
+
+  // Button to toggle WiFi settings visibility
+  html += "<button onclick='toggleWiFiSettings()'>WiFi Settings</button><br>";
+
+  // WiFi settings section initially hidden
+  html += "<div id='wifiSettings' style='display:none;'>";
+
+  // Display saved WiFi details as a dropdown menu
+  html += "<h3>Saved WiFi</h3>";
+  if (wifiSaved && loadedEntries > 0) {
+    html += "<select id='savedNetworks' name='ssid'>";
+    html += "<option value='' selected disabled>Select WiFi Network</option>";  // Placeholder option
+    for (int i = 0; i < loadedEntries; i++) {
+      html += "<option value='" + String(credentials[i].ssid) + "' data-password='" + String(credentials[i].password) + "'>" + String(credentials[i].ssid) + "</option>";
+    }
+    html += "</select><br><br>";
+    html += "<button type='button' onclick='connectToSavedWiFi()'>Connect</button>";
+    html += "<button type='button' onclick='deleteSelectedWiFi()'>Delete</button><br>";
+  } else {
+    html += "<p>No saved WiFi credentials found.</p><br>";
+  }
+
+  // Button to toggle Scan for Networks section
+  html += "<button onclick='toggleScanForNetworks()'>Scan for Networks</button><br>";
+
+  // Scan for Networks section initially hidden
+  html += "<div id='scanNetworks' style='display:none;'>";
+  html += "<form method='get' action='/connect' onsubmit='return validateForm()'>";  // Add onsubmit event to validate form
+
+  // Dropdown list of available SSIDs
+  html += "<select id='availableNetworks' name='ssid'>";
+  html += "<option value='' selected disabled>Select WiFi Network</option>";  // Placeholder option
+  html += "</select><br>";
+  // Password input
+  html += "<input type='password' name='password' placeholder='Password' required><br>";
+  // Connect button
+  html += "<button type='submit'>Connect to New WiFi</button><br>";
+  html += "</form>";
+  html += "</div>";  // Close Scan for Networks div
+  html += "</div>";  // Close WiFi settings div
+
+  // Other buttons and links
+  html += "<br><button onclick='restartESP();'>Restart ESP8266</button>";
+  html += "<button id='otaButton' onclick='toggleOTA()'>" + String(isOTAEnabled ? "Disable OTA" : "Enable OTA") + "</button><br>";
+  html += "<a href='/'><button>Back to Home</button></a>";
+
+
+  html += "<footer style='text-align:center;font-weight:bold;font-family:Bebas Neue;'>Developed by Sami Ibn Jamil</footer>";
+  html += "</body></html>";
+
+  return html;
+}
+
+String generateControlPage() {
+  //String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>Light Controller</title><style>body{background-color:#222;color:#fff;font-family:Arial,sans-serif;padding:20px;}button{background-color:#444;color:#fff;border:none;padding:10px 20px;margin:5px;cursor:pointer;}input[type='number']{padding:10px;margin:5px;border-radius:5px;box-sizing:border-box;}@media only screen and (max-width:600px){button{width:100%;}input{width:100%;}}.strobing { animation: strobe-animation 0.5s infinite alternate;}@keyframes strobe-animation {from {background-color: #444;}to {background-color: #fff;}}</style></head><body><h2 style='text-align:center;font-family:Bebas Neue;'>Techno Lights</h2><div style='text-align:center;'>";
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>Light Controller</title>";
+  html += "<style>body{background-color:#222;color:#fff;font-family:Arial,sans-serif;padding:20px;}button{background-color:#444;color:#fff;border:none;padding:10px 20px;margin:5px;cursor:pointer;}";
+  html += "input[type='number']{padding:10px;margin:5px;border-radius:5px;box-sizing:border-box;}@media only screen and (max-width:600px){button{width:80%;}input{width:80%;}}";
+  html += ".strobing { animation: strobe-animation 0.5s infinite alternate;}";
+  html += "@keyframes strobe-animation {from {background-color: #444;}to {background-color: #fff;}}</style>";
+  html += "</head><body>";
+  html += "<h2 style='text-align:center;font-family:Bebas Neue;'>Techno Lights</h2>";
+  html += "</div><div style='text-align:center;'>";
+  html += "<button onclick='sendIR(\"Power\")'>Power</button>";
+  html += "<button onclick='sendIR(\"Brightness +\")'>Brightness +</button>";
+  html += "<button onclick='sendIR(\"Brightness -\")'>Brightness -</button>";
+  html += "</div><div style='text-align:center;'>";
+  html += "</div><div style='text-align:center;'>";
+  html += "</div><div style='text-align:center;'>";
+  String colors[] = { "Red", "Blue", "Green", "Yellow", "Warm", "White" };
+  String textColors[] = { "#EF5350", "#2196F3", "#4CAF50", "#FFEB3B", "#FF9800", "#FFFFFF" };  // Hex codes for text colors
+  for (int i = 0; i < sizeof(colors) / sizeof(colors[0]); i++) {
+    html += "<button onclick='sendIR(\"" + colors[i] + "\")' style='color: " + textColors[i] + ";'>" + colors[i] + "</button>";
+  }
+  html += "</div><div style='text-align:center;'>";
+  html += "<button id='strobeButton' onclick='toggleStrobe()'>" + String(isStrobeOn ? "Strobe OFF" : "Strobe") + "</button>";
+  html += "<button id='colorstrobe' onclick='toggleColorStrobe()'>" + String(isColorStrobe ? "Color Strobe OFF" : "Color Strobe") + "</button>";
+  html += "<input type='number' id='bpmInput' placeholder='Enter BPM' style='text-align:center;' oninput='updateBPM()'>";
+  html += "<button onclick='doubleBPM()'>2x BPM</button>";
+  html += "<button onclick='halfBPM()'>1/2x BPM</button>";
+  html += "<h3 style='text-align:center;'>Current BPM is: <span id='currentBPM'>" + String(bpm) + "</span></h3>";
+  html += "</div><div style='text-align:center;'>";
+  html += "</div><div style='text-align:center;'>";
+  html += "<a href='/'><button>Back to Home</button></a>";
+  html += "</body></html>";
+  html += "</div><script>";
+  html += "function sendIR(color){fetch('/ir?color='+encodeURIComponent(color));}";
+  html += "var strobeInterval = " + String(60000 / bpm / 2) + ";";  // Set strobe interval to 1s (1000 milliseconds)
+  html += "var intervalId;";                                        // Declare intervalId variable globally
+
+  // Function to toggle the strobing effect on the strobeButton
+  html += "function toggleStrobe() {";
+  html += "    var button = document.getElementById('strobeButton');";
+  html += "    if (button.innerText === 'Strobe OFF') {";
+  html += "        button.innerText = 'Strobe';";
+  html += "        stopStrobe('strobeButton');";  // Stop the strobing effect
+  html += "    } else {";
+  html += "        button.innerText = 'Strobe OFF';";
+  html += "        startStrobe('strobeButton');";  // Start the strobing effect
+  html += "    }";
+  html += "    fetch('/toggle-strobe').then(response=>response.text()).then(text=>{document.getElementById('strobeButton').innerText=text;});";
+  html += "}";
+
+  html += "function toggleColorStrobe() {";
+  html += "    var button = document.getElementById('colorstrobe');";
+  html += "    if (button.innerText === 'Color Strobe OFF') {";
+  html += "        button.innerText = 'Color Strobe';";
+  html += "        stopStrobe('colorstrobe');";  // Stop the strobing effect
+  html += "    } else {";
+  html += "        button.innerText = 'Color Strobe OFF';";
+  html += "        startStrobe('colorstrobe');";  // Start the strobing effect
+  html += "    }";
+  html += "    fetch('/toggle-colorstrobe').then(response=>response.text()).then(text=>{document.getElementById('colorstrobe').innerText=text;});";
+  html += "}";
+
+  html += "function startStrobe(elementId) {";
+  html += " strobeInterval = " + String(60000 / bpm / 2) + ";";
+  html += "    intervalId = setInterval(function() {";
+  html += "        document.getElementById(elementId).classList.toggle('strobing');";
+  html += "    }, strobeInterval);";
+  html += "}";
+
+  html += "function stopStrobe(elementId) {";
+  html += "    clearInterval(intervalId);";
+  html += "    document.getElementById(elementId).classList.remove('strobing');";
+  html += "}";
+
+  html += "function doubleBPM(){fetch('/double-bpm').then(response=>response.text()).then(text=>{updateCurrentBPM(text);});}";
+  html += "function halfBPM(){fetch('/half-bpm').then(response=>response.text()).then(text=>{updateCurrentBPM(text);});}";
+  html += "function updateCurrentBPM(newBPM){document.getElementById('currentBPM').innerText=newBPM;}";
+  html += "function updateBPM(){var newBPM=document.getElementById('bpmInput').value; fetch('/set-bpm?bpm='+newBPM).then(response=>response.text()).then(text=>{document.getElementById('currentBPM').innerText=text;});}";
+  html += "function skipWiFiSetup(){window.location='/';}";  // JavaScript function to redirect
+  html += "</script><footer style='text-align:center;font-weight:bold;font-family:Bebas Neue;'>Developed by Sami Ibn Jamil</footer></body></html>";
+  return html;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+
+  if (!LittleFS.begin()) {
+    Serial.println("Failed to mount file system");
+    return;
+  }
+  irsend.begin();
+  pinMode(LED_BUILTIN, OUTPUT);
+  if (connectToWiFi(ssid, password)) {
+
+    // Connection successful, save the SSID and password
+    saveSSID(ssid, password);
+
+  } else {
+    // Connection failed, do not save the SSID and password
+    Serial.println("Failed to connect to WiFi. SSID and password not saved. check password");
+    // Optionally handle failure cases (e.g., provide feedback to the user)
+  }
+  setupOTA();
+  setupServer();
+}
+
+void loop() {
+  if (isOTAEnabled) {
+    ArduinoOTA.handle();
+  }
+  server.handleClient();
   if (isStrobeOn) {
-    previousStrobeTime = millis();
-    interval = 60000 / bpm / 2;
+    handleStrobe();
   }
-  server.send(200, "text/plain", String(isStrobeOn ? "Stop Strobe" : "Strobe"));
-}
-
-void handleToggleColorStrobe() {
-  isColorStrobe = !isColorStrobe;
   if (isColorStrobe) {
-    previousStrobeTime = millis();
-    interval = 60000 / bpm / 2;
+    handleColorStrobe();
   }
-  server.send(200, "text/plain", String(isColorStrobe ? "Color Strobe OFF" : "Color Strobe"));
-}
-
-void handleToggleOTA() {
-  isOTAEnabled = !isOTAEnabled;
-  server.send(200, "text/plain", String(isOTAEnabled ? "Disable OTA" : "Enable OTA"));
-}
-
-void handleDoubleBPM() {
-  bpm *= 2;
-  interval = 60000 / bpm / 2;
-  server.send(200, "text/plain", String(bpm));
-}
-
-void handleHalfBPM() {
-  bpm /= 2;
-  interval = 60000 / bpm / 2;
-  server.send(200, "text/plain", String(bpm));
-}
-
-void handleSetBPM() {
-  if (server.hasArg("bpm")) {
-    bpm = server.arg("bpm").toInt();
-    interval = 60000 / bpm / 2;
-  }
-  server.send(200, "text/plain", String(bpm));
+  WifiAP1();
 }
